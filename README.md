@@ -4,7 +4,7 @@ A simple load testing tool using go.
 
 There are tons of go load testing tools out there. This was something I built as I was learning go.
 
-⚠️  DISCLAIMER: This was orginally forked from github.com/kshyju/go-load. Overstating? Yup.
+⚠️  DISCLAIMER: This was originally forked from github.com/kshyju/go-load. Overstating? Yup.
 
 ### Usage
 
