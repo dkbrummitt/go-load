@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -12,11 +13,22 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type ResponseItem struct {
 	status  string
 	latency int64
+}
+
+type ErrorResponseItem struct {
+	status     string
+	statusCode int
+	latency    int64
+	requestID  string
+	headers    http.Header
+	body       string
 }
 
 type RunSummary struct {
@@ -37,6 +49,8 @@ const DefaultDuration = 1
 // DefaultRPS The default number of requests to issue per second.
 const DefaultRPS = 1
 
+var signature string
+
 func main() {
 
 	urlPtr := flag.String("u", "", "The URL to send traffic to")
@@ -45,6 +59,7 @@ func main() {
 	headersPtr := flag.String("h", "", "The request headers in comma separated form")
 	bodyFileNamePtr := flag.String("body", "", "The file name which contains request body. Used for POST calls.")
 	verboseLoggingPtr := flag.Bool("v", false, "Is verbose logging enabled")
+	sigPtr := flag.String("sig", "", "suffix signature to append to the requestID")
 
 	flag.Parse()
 
@@ -63,6 +78,7 @@ func main() {
 	var duration = *durationPtr
 	var requestBodyFileName = *bodyFileNamePtr
 	var verboseLoggingEnabled = *verboseLoggingPtr
+	signature = *sigPtr
 
 	// If we got a body payload file from user, user that for request Body.
 	var bodyContentToSend []byte
@@ -90,6 +106,7 @@ func main() {
 
 	emojis := [10]string{"🌿", "🍁", "🌞", "🌷", "🌼", "🐱", "❄️", "🌱", "🍂", "🌴"}
 	httpCallResponseItems := make([]ResponseItem, 0)
+	httpCallErrorItems := make([]ErrorResponseItem, 0)
 
 	fmt.Printf("📢 Will send %d requests per seconds for %d seconds to %s \n", rps, duration, url)
 	var wg sync.WaitGroup
@@ -97,7 +114,7 @@ func main() {
 
 		for counter := 0; counter < rps; counter++ {
 			wg.Add(1)
-			go makeRestCallAsync(client, url, bodyContentToSend, headerMap, &wg, verboseLoggingEnabled, mutex, &httpCallResponseItems)
+			go makeRestCallAsync(client, url, bodyContentToSend, headerMap, &wg, verboseLoggingEnabled, mutex, &httpCallResponseItems, &httpCallErrorItems)
 		}
 
 		var finished = secondsCounter * rps
@@ -122,6 +139,7 @@ func main() {
 	for k, v := range summary.responseStatusCountMap {
 		fmt.Printf("       %s: %d\n", k, v)
 	}
+
 	fmt.Println("Latencies observed in milli seconds")
 	fmt.Printf("   Average: %d\n", summary.latencyNinetyNinePercentile)
 	fmt.Printf("   99th percentile: %d\n", summary.latencyNinetyNinePercentile)
@@ -131,9 +149,16 @@ func main() {
 	fmt.Printf("🐌 Slowest request: %d\n", summary.latencyForSlowestRequest)
 	fmt.Printf("🚀 Fastest request: %d\n", summary.latencyForFastestRequest)
 	fmt.Println("======================")
+
+	fmt.Println("\n😈 BADDIES 😈")
+
+	for k, item := range httpCallErrorItems {
+		fmt.Printf("       %d: %s Request ID: %s Response Body:'%s'\n", k+1, item.status, item.requestID, item.body)
+	}
+	fmt.Println("======================")
 }
 
-//buildHeaderDictionary Builds a map for request headers to be used.
+// buildHeaderDictionary Builds a map for request headers to be used.
 func buildHeaderDictionary(headerStringCommaSeparated string) map[string]string {
 	var headerMap = make(map[string]string)
 	allHeaders := strings.Split(headerStringCommaSeparated, ",")
@@ -146,7 +171,7 @@ func buildHeaderDictionary(headerStringCommaSeparated string) map[string]string 
 	return headerMap
 }
 
-//getRunSummary Gets the run summary.
+// getRunSummary Gets the run summary.
 func getRunSummary(allResponses []ResponseItem) RunSummary {
 	var runSummary RunSummary
 
@@ -204,8 +229,7 @@ func getPercentileLatency(sortedLatencies []ResponseItem, percentileAskedFor int
 
 // Makes an HTTP call to the URL passed in.
 // If "bodyContentToSend" is not nil, we default the request method to POST.
-func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte, headerMap map[string]string, wg *sync.WaitGroup, verboseLogging bool, mutex *sync.Mutex,
-	responseItems *[]ResponseItem) {
+func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte, headerMap map[string]string, wg *sync.WaitGroup, verboseLogging bool, mutex *sync.Mutex, responseItems *[]ResponseItem, errorItems *[]ErrorResponseItem) {
 
 	reqBody := bytes.NewBuffer(bodyContentToSend)
 	var method = "GET"
@@ -214,6 +238,9 @@ func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte
 	}
 
 	req, _ := http.NewRequest(method, url, reqBody)
+
+	reqID, _ := GetTraceInfo()
+	headerMap["X-Request-Id"] = reqID
 
 	if len(headerMap) > 0 {
 		for headerName, headerValue := range headerMap {
@@ -241,11 +268,30 @@ func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte
 		// Record the response status code to our dictionary so we can print the summary later.
 		//mutex.Lock()
 		*responseItems = append(*responseItems, responseStatusLatencyItem)
+		if resp.StatusCode >= 400 {
+			b, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Fatalln(err)
+			}
+			*errorItems = append(*errorItems, ErrorResponseItem{resp.Status, resp.StatusCode, elapsed.Milliseconds(), reqID, resp.Header, string(b)})
+
+		}
 		//mutex.Unlock()
 
 		wg.Done()
 	} else {
-		fmt.Printf("ERROR: %s\n", httpCallError)
+		fmt.Printf("ERROR: <Request ID: %s> %s \n", reqID, httpCallError)
+		*errorItems = append(*errorItems, ErrorResponseItem{resp.Status, resp.StatusCode, elapsed.Milliseconds(), reqID, nil, httpCallError.Error()})
 		wg.Done()
 	}
+}
+
+func GetTraceInfo() (string, string) {
+	var requestID, traceparent string
+	tmpUUID, _ := uuid.NewUUID()
+	requestID = tmpUUID.String()
+	if len(signature) > 0 {
+		requestID += "-" + signature
+	}
+	return requestID, traceparent
 }
