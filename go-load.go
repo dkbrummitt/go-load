@@ -238,7 +238,7 @@ func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte
 	}
 
 	req, _ := http.NewRequest(method, url, reqBody)
-
+	mutex.Lock()
 	reqID, _ := GetTraceInfo()
 	headerMap["X-Request-Id"] = reqID
 
@@ -251,7 +251,7 @@ func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte
 	if len(bodyContentToSend) > 0 {
 		req.Header.Set("content-type", "application/json")
 	}
-	mutex.Lock()
+	// mutex.Lock()
 	start := time.Now()
 	var resp, httpCallError = client.Do(req)
 	end := time.Now()
