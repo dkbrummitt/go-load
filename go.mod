@@ -1,4 +1,4 @@
-module github.com/kshyju/go-load
+module github.com/dkbrummitt/go-load
 
 go 1.21
 

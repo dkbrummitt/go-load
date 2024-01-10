@@ -1,9 +1,10 @@
 # go-load
- 
-A simple load testing tool using go. 
+
+A simple load testing tool using go.
 
 There are tons of go load testing tools out there. This was something I built as I was learning go.
 
+⚠️  DISCLAIMER: This was orginally forked from github.com/kshyju/go-load. Overstating? Yup.
 
 ### Usage
 
@@ -31,7 +32,7 @@ If you have special characters like `&` in your URL, you need to pass the value 
     go-load -c 10 -d 30 "https://www.bing.com?how=are&you=today"
 
 #### Sending request headers
-Request headers can be passed as a comma separated string with the `-h` flag. The string should have header key and value in the `key:value` format. Ex: `User-Agent:Go-http-client/1.1` 
+Request headers can be passed as a comma separated string with the `-h` flag. The string should have header key and value in the `key:value` format. Ex: `User-Agent:Go-http-client/1.1`
 
     go-load -c=10 -d=30 -h my-apikey:foo,cookie:uid:bar https://www.bing.com
 
