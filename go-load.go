@@ -23,12 +23,13 @@ type ResponseItem struct {
 }
 
 type ErrorResponseItem struct {
-	status     string
-	statusCode int
-	latency    int64
-	requestID  string
-	headers    http.Header
-	body       string
+	status      string
+	statusCode  int
+	latency     int64
+	requestID   string
+	respHeaders http.Header
+	reqHeaders  http.Header
+	body        string
 }
 
 type RunSummary struct {
@@ -50,9 +51,9 @@ const DefaultDuration = 1
 const DefaultRPS = 1
 
 var signature string
+var errCount int
 
 func main() {
-
 	urlPtr := flag.String("u", "", "The URL to send traffic to")
 	durationPtr := flag.Int("d", DefaultDuration, "Duration in seconds. Default is 1.")
 	rpsPtr := flag.Int("c", DefaultRPS, "Number of connections to use per second. This is almost same as RPS. Default is 12")
@@ -80,6 +81,7 @@ func main() {
 	var verboseLoggingEnabled = *verboseLoggingPtr
 	signature = *sigPtr
 
+	fmt.Println("using signature:", signature)
 	// If we got a body payload file from user, user that for request Body.
 	var bodyContentToSend []byte
 
@@ -115,6 +117,10 @@ func main() {
 		for counter := 0; counter < rps; counter++ {
 			wg.Add(1)
 			go makeRestCallAsync(client, url, bodyContentToSend, headerMap, &wg, verboseLoggingEnabled, mutex, &httpCallResponseItems, &httpCallErrorItems)
+			if errCount > 10 {
+				fmt.Println("WARNING: Too many errors detected. Stopping early!!!")
+				break
+			}
 		}
 
 		var finished = secondsCounter * rps
@@ -153,7 +159,7 @@ func main() {
 	fmt.Println("\n😈 BADDIES 😈")
 
 	for k, item := range httpCallErrorItems {
-		fmt.Printf("       %d: %s Request ID: %s Response Body:'%s'\n", k+1, item.status, item.requestID, item.body)
+		fmt.Printf("       %d: %s Request ID: %s Response Headers: %+v Response Body:'%s'\n", k+1, item.status, item.requestID, item.respHeaders, item.body)
 	}
 	fmt.Println("======================")
 }
@@ -230,7 +236,9 @@ func getPercentileLatency(sortedLatencies []ResponseItem, percentileAskedFor int
 // Makes an HTTP call to the URL passed in.
 // If "bodyContentToSend" is not nil, we default the request method to POST.
 func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte, headerMap map[string]string, wg *sync.WaitGroup, verboseLogging bool, mutex *sync.Mutex, responseItems *[]ResponseItem, errorItems *[]ErrorResponseItem) {
-
+	if errCount > 10 {
+		return
+	}
 	reqBody := bytes.NewBuffer(bodyContentToSend)
 	var method = "GET"
 	if len(bodyContentToSend) > 0 {
@@ -238,24 +246,28 @@ func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte
 	}
 
 	req, _ := http.NewRequest(method, url, reqBody)
-	mutex.Lock()
+	// mutex.Lock()
 	reqID, _ := GetTraceInfo()
-	headerMap["X-Request-Id"] = reqID
 
 	if len(headerMap) > 0 {
 		for headerName, headerValue := range headerMap {
 			req.Header.Set(headerName, headerValue)
 		}
 	}
-
+	req.Header.Set("x-request-id", reqID)
+	req.Header.Set("x-dkb-id", reqID)
 	if len(bodyContentToSend) > 0 {
 		req.Header.Set("content-type", "application/json")
 	}
-	// mutex.Lock()
+	mutex.Lock()
 	start := time.Now()
 	var resp, httpCallError = client.Do(req)
 	end := time.Now()
+	if resp.StatusCode >= 400 {
+		errCount++
+	}
 	mutex.Unlock()
+	fmt.Println("Request Header: ", req.Header)
 	elapsed := end.Sub(start)
 
 	if httpCallError == nil {
@@ -266,24 +278,27 @@ func makeRestCallAsync(client *http.Client, url string, bodyContentToSend []byte
 		responseStatusLatencyItem := ResponseItem{resp.Status, elapsed.Milliseconds()}
 
 		// Record the response status code to our dictionary so we can print the summary later.
-		//mutex.Lock()
 		*responseItems = append(*responseItems, responseStatusLatencyItem)
 		if resp.StatusCode >= 400 {
 			b, err := io.ReadAll(resp.Body)
 			if err != nil {
 				log.Fatalln(err)
 			}
-			*errorItems = append(*errorItems, ErrorResponseItem{resp.Status, resp.StatusCode, elapsed.Milliseconds(), reqID, resp.Header, string(b)})
-
+			*errorItems = append(*errorItems, ErrorResponseItem{resp.Status, resp.StatusCode, elapsed.Milliseconds(), reqID, resp.Header, req.Header, string(b)})
+			fmt.Printf("Status: %s (in %d)\n", resp.Status, elapsed)
+			fmt.Printf("Request Header: %+v\n", req.Header)
+			fmt.Printf("Response Header: %+v\n", resp.Header)
+			fmt.Printf("Response Body: '%s'\n", string(b))
+			fmt.Println("-----------------------------")
 		}
-		//mutex.Unlock()
 
 		wg.Done()
 	} else {
 		fmt.Printf("ERROR: <Request ID: %s> %s \n", reqID, httpCallError)
-		*errorItems = append(*errorItems, ErrorResponseItem{resp.Status, resp.StatusCode, elapsed.Milliseconds(), reqID, nil, httpCallError.Error()})
+		*errorItems = append(*errorItems, ErrorResponseItem{resp.Status, resp.StatusCode, elapsed.Milliseconds(), reqID, nil, req.Header, httpCallError.Error()})
 		wg.Done()
 	}
+
 }
 
 func GetTraceInfo() (string, string) {
